@@ -6,6 +6,7 @@ type Player = {
 	id: number;
 	username: string;
 	socket: WebSocket;
+	imageUrl: string;
 };
 
 export class ScribbleGameRoom {
@@ -13,17 +14,23 @@ export class ScribbleGameRoom {
 	broadcastDelay = 5000;
 
 	players: Player[];
-	phase: 'ROOM_GATHERING' | 'WORD_SELECTION';
-	drawingPlayer?: Player;
-	words: string[];
+	phase: 'ROOM_GATHERING' | 'WORD_SELECTION' | 'WORD_DRAWING';
+	drawing_player?: Player;
+	drawing_json?: string;
+
+	_words?: string[];
+	_selectedWord?: string;
 
 	constructor(state: any) {
 		state.blockConcurrencyWhile(async () => {});
 
 		this.players = [];
-		this.words = [];
 		this.phase = 'ROOM_GATHERING';
-		this.broadcastInterval = setInterval(() => this.broadcastState(), this.broadcastDelay);
+
+		this.broadcastInterval = setInterval(() => {
+			this.processState();
+			this.broadcastState();
+		}, this.broadcastDelay);
 	}
 
 	async fetch(request: Request) {
@@ -33,24 +40,39 @@ export class ScribbleGameRoom {
 		return new Response(null, { status: 101, webSocket: pair[0] });
 	}
 
-	getRoomState() {
+	getRoomStateForGuessers() {
 		return {
 			phase: this.phase,
-			drawingPlayer: this.drawingPlayer,
+			drawing_player: this.drawing_player,
 			players: this.players.map((player) => ({
 				username: player.username,
 				id: player.id,
+				imageUrl: player.imageUrl,
 			})),
+			drawing_json: this.drawing_json,
+		};
+	}
+
+	getRoomStateForDrawer() {
+		return {
+			...this.getRoomStateForGuessers(),
+			words: this._words,
 		};
 	}
 
 	processState() {
-		if ((this.phase = 'ROOM_GATHERING')) {
+		if (this.phase === 'ROOM_GATHERING') {
 			// process to next phase as soon as there are at least 2 players
 			if (this.players.length >= 2) {
 				this.phase = 'WORD_SELECTION';
-				this.words = ['dog', 'elephant', 'car'];
-				this.drawingPlayer = this.players[_.random(0, this.players.length, false)];
+				this._words = ['dog', 'elephant', 'car'];
+				this.drawing_player = this.players[_.random(0, this.players.length, false)];
+			}
+		}
+
+		if (this.phase === 'WORD_SELECTION') {
+			if (this._selectedWord) {
+				this.phase = 'WORD_DRAWING';
 			}
 		}
 	}
@@ -67,21 +89,12 @@ export class ScribbleGameRoom {
 			socket: webSocket,
 			username: formatName(user),
 			id: user.id,
+			imageUrl: `https://telegram-avatar.bermanoleg.workers.dev/?id=${user.id}`,
 		};
 
 		this.players.push(player);
 
-		webSocket.addEventListener('message', async (msg) => {
-			try {
-				const message = JSON.parse(msg.data as string);
-				switch (message.type) {
-					case 'room:join':
-				}
-			} catch (err) {
-				console.log(err);
-				console.log('invalid json in websocket message');
-			}
-		});
+		webSocket.addEventListener('message', this.handleMessage);
 
 		webSocket.addEventListener('close', this.handleClose(player.id));
 
@@ -92,27 +105,51 @@ export class ScribbleGameRoom {
 		});
 	}
 
+	async handleMessage(msg) {
+		try {
+			const message = JSON.parse(msg.data as string);
+			switch (message.type) {
+				case 'word_select':
+					if (this.phase === 'WORD_SELECTION') {
+						if (this._words?.includes(message.payload.word)) {
+							this._selectedWord = message.payload.word;
+						}
+					}
+					break;
+
+				case 'word_draw':
+					if (this.phase === 'WORD_DRAWING') {
+						this.drawing_json = message.payload.drawing_json;
+					}
+					break;
+			}
+		} catch (err) {
+			console.log(err);
+			console.log('invalid json in websocket message');
+		}
+	}
+
 	handleClose = (id: number) => () => {
 		this.players = this.players.filter((player) => player.id !== id);
 	};
 
 	broadcastState() {
-		this.broadcast({
-			type: 'room:state',
-			payload: this.getRoomState(),
-		});
-	}
-
-	broadcast(message: any, toPlayers?: Player[]) {
-		if (typeof message !== 'string') {
-			message = JSON.stringify(message);
-		}
-		if (!toPlayers) {
-			toPlayers = this.players;
-		}
-		for (let player of toPlayers) {
-			console.log('sent', message);
-			player.socket.send(message);
+		for (let player of this.players) {
+			if (player.id === this.drawing_player?.id) {
+				player.socket.send(
+					JSON.stringify({
+						type: 'room:state',
+						payload: this.getRoomStateForDrawer(),
+					})
+				);
+			} else {
+				player.socket.send(
+					JSON.stringify({
+						type: 'room:state',
+						payload: this.getRoomStateForGuessers(),
+					})
+				);
+			}
 		}
 	}
 
