@@ -18,6 +18,8 @@
 		"wrangler": "^3.60.3"
 	},
 	"dependencies": {
+		"dayjs": "^1.11.11",
+		"grammy": "^1.27.0",
 		"lodash": "^4.17.21"
 	}
 }
