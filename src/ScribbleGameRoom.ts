@@ -14,7 +14,7 @@ type Player = {
 	guessed_seconds?: null | number;
 };
 
-type Phase = 'ROOM_GATHERING' | 'WORD_SELECTION' | 'WORD_DRAWING' | 'WORD_NOT_SELECTED' | 'ROUND_RESULTS';
+type Phase = 'ROOM_GATHERING' | 'WORD_SELECTION' | 'WORD_DRAWING' | 'WORD_NOT_SELECTED' | 'ROUND_RESULTS' | 'GAME_RESULTS';
 
 const durations: Record<Phase, number> = {
 	ROOM_GATHERING: 5,
@@ -22,6 +22,7 @@ const durations: Record<Phase, number> = {
 	WORD_NOT_SELECTED: 10,
 	WORD_SELECTION: 20,
 	ROUND_RESULTS: 12,
+	GAME_RESULTS: Infinity,
 };
 
 export class ScribbleGameRoom {
@@ -152,11 +153,12 @@ export class ScribbleGameRoom {
 		this.phase = 'ROUND_RESULTS';
 		this.phase_end_at = dayjs().add(durations.ROUND_RESULTS, 'seconds').toISOString();
 		this.phase_start_at = dayjs().toISOString();
-		if (this.round === 4) {
-			console.log('can terminate room here');
-			// should switch to a seperate phase, but it's for tomorrow
-			this.setRoomGatheringPhase();
-		}
+	}
+
+	setGameResults() {
+		this.phase = 'GAME_RESULTS';
+		this.phase_end_at = null;
+		this.phase_start_at = dayjs().toISOString();
 	}
 
 	setRoomGatheringPhase() {
@@ -197,7 +199,7 @@ export class ScribbleGameRoom {
 					});
 					if (this.round === 4) {
 						// should set results here already
-						this.setRoomGatheringPhase();
+						this.setGameResults();
 					} else {
 						this.round = this.round + 1;
 						this.setWordSelectionPhase();
@@ -213,7 +215,7 @@ export class ScribbleGameRoom {
 		if (this.phase === 'WORD_NOT_SELECTED') {
 			if (this.isPhaseExpired()) {
 				// reset to room gathering?
-				this.setRoomGatheringPhase();
+				// this.setRoomGatheringPhase();
 			}
 		}
 
@@ -234,6 +236,11 @@ export class ScribbleGameRoom {
 
 		if (this.phase === 'ROUND_RESULTS') {
 			if (this.isPhaseExpired()) {
+				if (this.round === 4) {
+					// should switch to a seperate phase, but it's for tomorrow
+					this.setGameResults();
+					return;
+				}
 				this.round = this.round + 1;
 				this.setWordSelectionPhase();
 			}
