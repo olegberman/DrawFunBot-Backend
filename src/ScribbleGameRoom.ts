@@ -3,6 +3,9 @@ import auth from './auth';
 import formatName from './formatName';
 import dayjs from 'dayjs';
 import words from './words';
+import { drizzle, DrizzleD1Database } from 'drizzle-orm/d1';
+import { rooms } from '@olegberman/drawfunbot-db';
+import { eq } from 'drizzle-orm';
 
 type Player = {
 	id: number;
@@ -29,6 +32,7 @@ export class ScribbleGameRoom {
 	broadcastInterval;
 	broadcastDelay = 1000;
 
+	id?: string;
 	players: Player[];
 	phase: Phase;
 	round: number;
@@ -38,18 +42,23 @@ export class ScribbleGameRoom {
 	drawing_json?: string;
 	guess_letters?: string[];
 
+	initialized: boolean;
+	state: DurableObjectState;
+	db: DrizzleD1Database;
+
 	_words?: string[];
 	_selectedWord?: string;
-
 	_lastMovePlayerIndex: number;
 
-	constructor(state: any) {
-		state.blockConcurrencyWhile(async () => {});
+	constructor(state: any, env: Env) {
+		this.db = drizzle(env.DB);
 
+		this.state = state;
 		this.players = [];
 		this.phase = 'ROOM_GATHERING';
 		this.round = 1;
 		this._lastMovePlayerIndex = -1;
+		this.initialized = false;
 
 		this.broadcastInterval = setInterval(() => {
 			this.processState();
@@ -57,11 +66,78 @@ export class ScribbleGameRoom {
 		}, this.broadcastDelay);
 	}
 
+	initialize = async (roomId: string) => {
+		this.id = roomId;
+		if (!this.initialized) {
+			this.state.blockConcurrencyWhile(async () => {
+				const foundRooms = await this.db.select().from(rooms).where(eq(rooms.id, roomId));
+				console.log('found rooms', foundRooms);
+				if (foundRooms[0].finished_at) {
+					console.log('this room is already done!');
+					this.setGameResults();
+				}
+				this.initialized = true;
+			});
+		}
+	};
+
 	async fetch(request: Request) {
 		let pair = new WebSocketPair();
 		const [client, server] = Object.values(pair);
+		await this.initialize(request.headers.get('room_id'));
 		await this.handleWebSocketSession(server, request);
 		return new Response(null, { status: 101, webSocket: pair[0] });
+	}
+
+	async handleWebSocketSession(webSocket: WebSocket, request: Request) {
+		const url = new URL(request.url);
+		const authData = url.searchParams.get('auth');
+
+		const user = auth(authData as string, request.headers.get('bot_token') as string);
+
+		webSocket.accept();
+
+		const webSocketId = crypto.randomUUID();
+
+		//@ts-ignore
+		webSocket.id = webSocketId;
+
+		const player = {
+			sockets: [webSocket],
+			username: formatName(user),
+			id: user.id,
+			imageUrl: `https://api.tondevs.com/avatar?id=${user.id}`,
+			joined_at: dayjs().toISOString(),
+			score: 0,
+			guessed_seconds: null,
+		};
+
+		const playerExists = this.players.some((p) => p.id === player.id);
+
+		if (playerExists) {
+			this.players = this.players.map((p) =>
+				p.id === player.id
+					? {
+							...p,
+							sockets: [...p.sockets, webSocket],
+					  }
+					: p
+			);
+		} else {
+			this.players.push(player);
+		}
+
+		// broadcast state first time right after connection
+		this.broadcastState();
+
+		webSocket.addEventListener('message', this.handleMessage(player.id));
+
+		webSocket.addEventListener('close', this.handleClose(player.id, webSocketId));
+
+		webSocket.addEventListener('error', (error) => {
+			console.log('WS Error', error);
+			this.handleClose(player.id, webSocketId)();
+		});
 	}
 
 	getRoomStateForGuessers() {
@@ -161,6 +237,17 @@ export class ScribbleGameRoom {
 		this.phase_start_at = dayjs().toISOString();
 	}
 
+	async setGameResultsDb() {
+		console.log('set game results called');
+		console.log(this.id);
+		await this.db
+			.update(rooms)
+			.set({
+				finished_at: dayjs().toISOString(),
+			})
+			.where(eq(rooms.id, this.id ?? ''));
+	}
+
 	setRoomGatheringPhase() {
 		this.phase = 'ROOM_GATHERING';
 		this._selectedWord = '';
@@ -200,6 +287,7 @@ export class ScribbleGameRoom {
 					if (this.round === 4) {
 						// should set results here already
 						this.setGameResults();
+						this.setGameResultsDb();
 					} else {
 						this.round = this.round + 1;
 						this.setWordSelectionPhase();
@@ -239,63 +327,13 @@ export class ScribbleGameRoom {
 				if (this.round === 4) {
 					// should switch to a seperate phase, but it's for tomorrow
 					this.setGameResults();
+					this.setGameResultsDb();
 					return;
 				}
 				this.round = this.round + 1;
 				this.setWordSelectionPhase();
 			}
 		}
-	}
-
-	async handleWebSocketSession(webSocket: WebSocket, request: Request) {
-		const url = new URL(request.url);
-		const authData = url.searchParams.get('auth');
-
-		const user = auth(authData as string, request.headers.get('bot_token') as string);
-
-		webSocket.accept();
-
-		const webSocketId = crypto.randomUUID();
-
-		//@ts-ignore
-		webSocket.id = webSocketId;
-
-		const player = {
-			sockets: [webSocket],
-			username: formatName(user),
-			id: user.id,
-			imageUrl: `https://telegram-avatar.bermanoleg.workers.dev/?id=${user.id}`,
-			joined_at: dayjs().toISOString(),
-			score: 0,
-			guessed_seconds: null,
-		};
-
-		const playerExists = this.players.some((p) => p.id === player.id);
-
-		if (playerExists) {
-			this.players = this.players.map((p) =>
-				p.id === player.id
-					? {
-							...p,
-							sockets: [...p.sockets, webSocket],
-					  }
-					: p
-			);
-		} else {
-			this.players.push(player);
-		}
-
-		// broadcast state first time right after connection
-		this.broadcastState();
-
-		webSocket.addEventListener('message', this.handleMessage(player.id));
-
-		webSocket.addEventListener('close', this.handleClose(player.id, webSocketId));
-
-		webSocket.addEventListener('error', (error) => {
-			console.log('WS Error', error);
-			this.handleClose(player.id, webSocketId)();
-		});
 	}
 
 	handleMessage = (playerId: number) => async (msg) => {

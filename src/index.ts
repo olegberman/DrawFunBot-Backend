@@ -12,6 +12,9 @@
  */
 
 import { ScribbleGameRoom } from './ScribbleGameRoom';
+import { rooms } from '@olegberman/drawfunbot-db';
+import { drizzle } from 'drizzle-orm/d1';
+import { eq } from 'drizzle-orm';
 
 export default {
 	async fetch(request, env, ctx): Promise<Response> {
@@ -26,15 +29,33 @@ export default {
 
 			const roomId = url.searchParams.get('id') || 'default';
 
-			let id = env.SCRIBBLE_GAME_ROOM.idFromName(roomId);
-			let stub = env.SCRIBBLE_GAME_ROOM.get(id);
+			const db = drizzle(env.DB);
+			let roomsFound = [];
+			try {
+				roomsFound = await db.select().from(rooms).where(eq(rooms.id, roomId));
+			} catch (err) {
+				console.log(err);
+			}
+			if (roomsFound.length > 0) {
+				let id = env.SCRIBBLE_GAME_ROOM.idFromName(roomId);
+				let stub = env.SCRIBBLE_GAME_ROOM.get(id);
 
-			return await stub.fetch(request, {
-				headers: {
-					Upgrade: 'websocket',
-					bot_token: env.BOT_TOKEN,
-				},
-			});
+				return await stub.fetch(request, {
+					headers: {
+						Upgrade: 'websocket',
+						bot_token: env.BOT_TOKEN,
+						room_id: roomId,
+					},
+				});
+			} else {
+				return new Response(null, {
+					status: 404,
+					statusText: 'Bad Request',
+					headers: {
+						'Content-Type': 'text/plain',
+					},
+				});
+			}
 		}
 
 		return new Response(null, {

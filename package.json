@@ -1,5 +1,5 @@
 {
-	"name": "scribble",
+	"name": "drawfunbot-backend",
 	"version": "0.0.0",
 	"private": true,
 	"scripts": {
@@ -18,7 +18,9 @@
 		"wrangler": "^3.60.3"
 	},
 	"dependencies": {
+		"@olegberman/drawfunbot-db": "^0.0.2",
 		"dayjs": "^1.11.11",
+		"drizzle-orm": "^0.32.1",
 		"grammy": "^1.27.0",
 		"lodash": "^4.17.21"
 	}
